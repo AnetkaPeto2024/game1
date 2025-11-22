@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <title>Waze Nehody (ACCIDENT Filter)</title>
+    <style>
+        /* --- Základné štýly --- */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f2f5;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        /* --- Sekcia Aktuálne Upozornenia --- */
+        .alerts-header {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f44336; /* Červená línia pre dôležitosť */
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        /* Nový štýl pre kontajner času a tlačidla */
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px; /* Medzera medzi časom a tlačidlom */
+        }
+
+        /* Štýl pre čas aktualizácie */
+        .update-time {
+            font-size: 16px;
+            font-weight: normal;
+            color: #555;
+            white-space: nowrap; /* Zabráni zalomeniu času */
+        }
+        
+        /* --- Štýly Tabuľky --- */
+        .accident-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        .accident-table th, .accident-table td {
+            border: 1px solid #ddd;
+            padding: 12px 8px;
+            text-align: left;
+            font-size: 14px;
+        }
+        .accident-table th {
+            background-color: #f44336; /* Červené hlavičky */
+            color: white;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .accident-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .accident-table tr:hover {
+            background-color: #fce4e4; /* Svetlo červený hover */
+        }
+
+        /* Špeciálne centrovanie pre numerické hodnoty */
+        .accident-table .center-text {
+            text-align: center;
+        }
+        
+        /* Štýl pre tlačidlo Waze */
+        .btn-waze-mini {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            background-color: #5353ff; /* Waze farba */
+            text-decoration: none;
+            display: inline-block;
+            transition: background-color 0.2s;
+            white-space: nowrap;
+        }
+        .btn-waze-mini:hover {
+            background-color: #3f3fae;
+        }
+
+        .loading-message, .no-data-message, .error-message {
+            text-align: center;
+            padding: 20px;
+            font-size: 16px;
+            color: #555;
+            border: 1px solid #eee;
+            border-radius: 6px;
+            margin-top: 20px;
+        }
+        .error-message {
+            color: #f44336;
+            border-color: #f44336;
+            background-color: #ffebee;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        
+        <div class="alerts-header">
+            <span>Nehody pre Peta 💥</span>
+            <div class="header-controls">
+                <span id="last-update-time" class="update-time">--:--:--</span>
+                <button class="btn-waze-mini" style="background-color: #3f51b5; padding: 10px 15px;" onclick="fetchWazeAccidents()">🔄 OBNOVIŤ</button>
+            </div>
+        </div>
+        
+        <div id="accidents-container">
+            <div class="loading-message">Načítavam dáta o nehodách...</div>
+        </div>
+    </div>
+
+    <script>
+        // Pevný referenčný bod (Komár GPS: 48.15706 N, 17.15049 E)
+        const KOMAR_LAT = 48.15706;
+        const KOMAR_LON = 17.15049;
+
+        // URL pre dáta z Waze
+        const BASE_WAZE_URL = 'https://www.waze.com/live-map/api/georss?top=48.00677&bottom=48.29126&left=16.97313&right=17.43044&env=row&types=alerts';
+        const CORS_PROXY = 'https://corsproxy.io/?';
+        const WAZE_API_URL = CORS_PROXY + encodeURIComponent(BASE_WAZE_URL);
+        
+        /**
+         * Funkcia na aktualizáciu času poslednej aktualizácie v hlavičke
+         */
+        function updateLastUpdateTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('sk-SK', { 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit'
+            });
+            document.getElementById('last-update-time').textContent = timeString;
+        }
+
+        /**
+         * Funkcia na výpočet vzdialenosti medzi dvoma GPS bodmi pomocou Haversine vzorca.
+         * Vracia vzdialenosť v kilometroch.
+         */
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Polomer Zeme v km
+            const toRad = (angle) => angle * (Math.PI / 180);
+
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = 
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const distance = R * c; // Vzdialenosť v km
+            return distance;
+        }
+
+        async function fetchWazeAccidents() {
+            // 1. Zaznamenanie a zobrazenie času začiatku aktualizácie
+            updateLastUpdateTime(); 
+
+            const container = document.getElementById('accidents-container');
+            container.innerHTML = '<div class="loading-message">Načítavam dáta...</div>';
+
+            try {
+                const response = await fetch(WAZE_API_URL);
+                if (!response.ok) {
+                    throw new Error(`Chyba pri volaní Waze cez Proxy: ${response.status} ${response.statusText}`);
+                }
+                
+                const data = await response.json(); 
+                
+                if (!data.alerts) {
+                    throw new Error("Dáta z Waze nemajú očakávanú štruktúru 'alerts'.");
+                }
+                
+                // FILTROVANIE: Zobrazujeme len nehody (ACCIDENT)
+                const relevantAccidents = data.alerts.filter(alert => 
+                    alert.type === 'ACCIDENT'
+                );
+
+                if (relevantAccidents.length === 0) {
+                    container.innerHTML = '<p class="no-data-message">✅ Žiadne aktuálne nehody (typ ACCIDENT) v oblasti.</p>';
+                    return;
+                }
+
+                let htmlContent = `
+                    <table class="accident-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Lokalita</th>
+                                <th>Typ</th>
+                                <th>Confidence</th>
+                                <th>Reliability</th>
+                                <th>ThumbsUp</th>
+                                <th>reportRating</th>
+                                <th>Čas</th>
+                                <th>km</th>
+                                <th>Navigovať</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                relevantAccidents.forEach((alert, index) => {
+                    const lat = alert.location.y;
+                    const lon = alert.location.x;
+                    const description = alert.street ? `${alert.city || 'Neznáme mesto'}, ${alert.street}` : `${alert.city || 'Neznáma lokalita'} (GPS: ${lat.toFixed(4)}, ${lon.toFixed(4)})`;
+                    const type = alert.subtype ? `${alert.type} (${alert.subtype.replace('ACCIDENT_', '').replace(/_/g, ' ')})` : alert.type;
+                    const confidence = alert.confidence || 0;
+                    const reliability = alert.reliability || 0;
+                    const nThumbsUp = alert.nThumbsUp || 0;
+                    const reportRating = alert.reportRating || 0;
+                    
+                    // Prevedieme milisekundy na čas
+                    const updateTime = new Date(alert.pubMillis).toLocaleTimeString('sk-SK', { 
+                        hour: '2-digit', 
+                        minute: '2-digit', 
+                        second: '2-digit'
+                    });
+                    
+                    // Výpočet vzdialenosti od Komára
+                    const distance = calculateDistance(KOMAR_LAT, KOMAR_LON, lat, lon).toFixed(2);
+
+                    htmlContent += `
+                        <tr>
+                            <td class="center-text">${index + 1}</td>
+                            <td>${description}</td>
+                            <td>${type.toUpperCase()}</td>
+                            <td class="center-text">${confidence}</td>
+                            <td class="center-text">${reliability}</td>
+                            <td class="center-text">${nThumbsUp} 👍</td>
+                            <td class="center-text">${reportRating} ⭐</td>
+                            <td class="center-text">${updateTime}</td>
+                            <td class="center-text">${distance} km</td>
+                            <td>
+                                <a class="btn-waze-mini" href="https://waze.com/ul?ll=${lat},${lon}&navigate=yes" target="_blank">
+                                    Waze 🗺️
+                                </a>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                htmlContent += `
+                        </tbody>
+                    </table>
+                `;
+
+                container.innerHTML = htmlContent;
+
+            } catch (error) {
+                console.error("Chyba pri získavaní dát:", error);
+                container.innerHTML = `<p class="error-message">❌ Chyba pri načítaní dát (CORS/API zlyhanie): ${error.message}</p>`;
+            }
+        }
+
+        // Spustenie pri načítaní stránky
+        fetchWazeAccidents();
+
+        // Automatické obnovovanie dát každých 10 sekúnd
+        setInterval(fetchWazeAccidents, 10000);
+    </script>
+</body>
+</html>
