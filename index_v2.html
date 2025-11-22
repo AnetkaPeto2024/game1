@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Waze Nehody - Live Alert System</title>
+    <style>
+        /* ===== GLOBAL CONSTANTS & RESET ===== */
+        :root {
+            --color-neon-green: #39ff14; /* Čas aktualizácie */
+            --color-neon-orange: #ff6600; /* Top 3 Priority */
+            --color-neon-yellow: #ffff00; /* Recent < 30 min */
+            --color-neon-cyan: #00ddff; /* Other */
+            --color-waze-blue: #5353ff;
+            --color-dark-gray: #1a1a1a;
+            --color-panel-border: rgba(255, 255, 255, 0.06);
+            --safe-area-top: env(safe-area-inset-top);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        body {
+            font-family: Arial, -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #000000;
+            color: #ffffff;
+            overflow-x: hidden;
+            min-height: 100vh;
+            /* Zabezpečenie správneho zobrazenia na mobiloch (napr. Dynamic Island) */
+            padding: var(--safe-area-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+        }
+
+        .container {
+            width: 100%;
+            max-width: 430px; /* Typická šírka pre mobil (portrait) */
+            margin: 0 auto;
+            padding: 12px 16px;
+        }
+
+        /* ===== STICKY HEADER ===== */
+        .header{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--color-dark-gray);
+        }
+
+        .header .left {
+            font-size: 14px;
+            color: #6b6b6b;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .audio-indicator {
+            font-size: 11px;
+            color: var(--color-neon-green);
+            background-color: rgba(57, 255, 20, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid rgba(57, 255, 20, 0.3);
+        }
+        
+        .audio-indicator.alert-active {
+            animation: alertPulse 0.5s ease-in-out 6;
+        }
+
+        @keyframes alertPulse {
+            0%, 100% { 
+                transform: scale(1);
+                background-color: rgba(57, 255, 20, 0.1);
+            }
+            50% { 
+                transform: scale(1.1);
+                background-color: rgba(255, 102, 0, 0.3);
+                color: var(--color-neon-orange);
+                border-color: rgba(255, 102, 0, 0.5);
+            }
+        }
+
+        .header .center {
+            flex: 1;
+            text-align: center;
+        }
+
+        .update-time {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--color-neon-green);
+            text-shadow: 
+                0 0 8px rgba(57, 255, 20, 0.7),
+                0 0 20px rgba(57, 255, 20, 0.3);
+            letter-spacing: 1px;
+        }
+
+        .btn-refresh {
+            padding: 8px 16px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background-color: var(--color-dark-gray);
+            color: #8a8a8a;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .btn-refresh.refreshing {
+            color: var(--color-neon-green);
+        }
+
+        /* --- Refresh Container & Spinner --- */
+        .refresh-container {
+            display: flex;
+            align-items: center;
+            gap: 12px; /* Medzera medzi tlačidlom a spinnerom */
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid #444;
+            border-top-color: var(--color-neon-green);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: none; /* Štandardne skrytý */
+        }
+
+        /* Zobrazí spinner, keď je kontajner v stave načítavania */
+        .refresh-container.loading .spinner {
+            display: block;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        /* ===== ACCIDENTS LIST (CARDS) ===== */
+        .accidents-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 4px 0;
+        }
+
+        /* Base Accident Card */
+        .accident-item {
+            background: linear-gradient(145deg, #0a0a0a 0%, #151515 100%);
+            border: 1.5px solid #252525;
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        /* Neon Top Bar for all cards */
+        .accident-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, var(--item-accent-color, #444), transparent);
+            opacity: 0.6;
+        }
+
+        /* --- STYLY NEHODA: TOP 3 (ORANGE) --- */
+        .accident-item.top3 {
+            --item-accent-color: var(--color-neon-orange);
+            border-color: rgba(255, 102, 0, 0.4);
+            box-shadow: 
+                0 0 20px rgba(255, 102, 0, 0.2),
+                0 4px 15px rgba(0, 0, 0, 0.4);
+        }
+        .accident-item.top3 .location {
+            font-size: 22px;
+            font-weight: bold;
+            color: var(--color-neon-orange);
+            text-shadow: 
+                0 0 10px rgba(255, 102, 0, 0.8),
+                0 0 20px rgba(255, 102, 0, 0.4);
+            line-height: 1.2;
+        }
+        .accident-item.top3 .time-km {
+            font-size: 22px;
+            font-weight: bold;
+            color: var(--color-neon-orange);
+            text-shadow: 0 0 8px rgba(255, 102, 0, 0.6);
+        }
+        .accident-item.top3 .type-stats {
+            color: #ff8844;
+            text-shadow: 0 0 3px rgba(255, 102, 0, 0.3);
+        }
+
+        /* --- STYLY NEHODA: RECENT < 30 MIN (YELLOW) --- */
+        .accident-item.recent {
+            --item-accent-color: var(--color-neon-yellow);
+            border-color: rgba(255, 255, 0, 0.4);
+            box-shadow: 
+                0 0 20px rgba(255, 255, 0, 0.2),
+                0 4px 15px rgba(0, 0, 0, 0.4);
+        }
+        .accident-item.recent .location {
+            font-size: 22px;
+            font-weight: bold;
+            color: var(--color-neon-yellow);
+            text-shadow: 
+                0 0 10px rgba(255, 255, 0, 0.8),
+                0 0 20px rgba(255, 255, 0, 0.4);
+        }
+        .accident-item.recent .time-km {
+            font-size: 22px;
+            font-weight: bold;
+            color: var(--color-neon-yellow);
+            text-shadow: 0 0 8px rgba(255, 255, 0, 0.6);
+        }
+        .accident-item.recent .type-stats {
+            color: #ffff88;
+            text-shadow: 0 0 3px rgba(255, 255, 0, 0.3);
+        }
+
+        /* --- STYLY NEHODA: OSTATNÉ (CYAN) --- */
+        .accident-item.other {
+            --item-accent-color: var(--color-neon-cyan);
+            border-color: rgba(0, 221, 255, 0.2);
+        }
+        .accident-item.other .location {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--color-neon-cyan);
+            text-shadow: 0 0 8px rgba(0, 221, 255, 0.5);
+            line-height: 1.2;
+        }
+        .accident-item.other .time-km {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--color-neon-cyan);
+            text-shadow: 0 0 6px rgba(0, 221, 255, 0.4);
+        }
+        .accident-item.other .type-stats {
+            font-size: 9px;
+            color: #66eeff;
+            text-shadow: 0 0 3px rgba(0, 221, 255, 0.2);
+        }
+
+        /* --- LAYOUT A KOMPONENTY --- */
+        .main-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .location {
+            flex: 1;
+            padding-right: 0;
+            word-wrap: break-word;
+        }
+
+        .time-km {
+            white-space: nowrap;
+            text-align: right;
+        }
+
+
+        .sub-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 6px;
+        }
+
+        .type-stats {
+            font-size: 11px; /* Optimalizovaná veľkosť pre detaily */
+            display: flex;
+            gap: 18px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .stat-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        /* Waze Navigation Button */
+        .btn-waze {
+            background: #096697;
+            color: white;
+            font-weight: 700;
+            text-decoration: none;
+            margin-left: 10px;
+            white-space: nowrap;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        /* Status Messages */
+        .loading-message, .no-data-message, .error-message {
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 16px;
+            border: 1px solid #252525;
+            border-radius: 12px;
+            margin-top: 20px;
+            line-height: 1.6;
+        }
+
+        .no-data-message {
+            color: var(--color-neon-green);
+            text-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <audio id="new-alert-audio" src="audio.wav" preload="auto"></audio>
+
+    <div class="container">
+        <div class="header">
+            <div class="left">
+                Nehody 💥
+                <span class="audio-indicator" id="audio-status">🔊 OFF</span>
+            </div>
+            <div class="center">
+                <div id="last-update-time" class="update-time">--:--:--</div>
+            </div>
+            <div class="refresh-container" id="refresh-container">
+                <button class="btn-refresh" id="refresh-btn">Refresh</button>
+                <div class="spinner"></div>
+            </div>
+        </div>
+        
+        <div id="accidents-container">
+            <div class="loading-message">⏳ Načítavam aktuálne nehody...</div>
+        </div>
+    </div>
+
+    <script>
+        // ===== GLOBAL CONFIGURATION =====
+        const CONFIG = {
+            KOMAR_LAT: 48.15706,
+            KOMAR_LON: 17.15049,
+            BASE_WAZE_URL: 'https://www.waze.com/live-map/api/georss?top=48.00677&bottom=48.29126&left=16.97313&right=17.43044&env=row&types=alerts',
+            CORS_PROXY: 'https://corsproxy.io/?',
+            REFRESH_INTERVAL: 10000, // 10 sekúnd
+            AUDIO_FILE: 'audio.wav',
+            RECENT_THRESHOLD_MINUTES: 30
+        };
+
+        // ===== GLOBAL STATE & CONSTS =====
+        let lastUpdateTimestamp = null;
+        let isRefreshing = false;
+        let audioAlert = null;
+
+        const WAZE_API_URL = CONFIG.CORS_PROXY + encodeURIComponent(CONFIG.BASE_WAZE_URL);
+
+        // ===== UTILITY FUNCTIONS =====
+
+        /**
+         * Bezpečnostná funkcia na ošetrenie HTML znakov v texte z API.
+         * Zabraňuje XSS útokom. Prevzaté z index_v2c.html.
+         */
+        function escapeHtml(s) {
+            return String(s)
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", "&#39;");
+        }
+
+        /**
+         * Získa robustný unikátny ID pre nehodu na základe UUID, GPS a typu.
+         * Používa sa pre perzistentné sledovanie videných nehôd.
+         */
+        function getAccidentId(alert) {
+            const uuid = alert.uuid || alert.id || '';
+            const lat = alert.location.y.toFixed(6);
+            const lon = alert.location.x.toFixed(6);
+            // Kľúčové: ID nezávisí od presného času pubMillis, aby nehody, ktoré "zmiznú a objavia sa" v krátkom čase, boli správne detekované ako nové.
+            return `${uuid || 'NO_UUID'}_${lat}_${lon}_${alert.type}`;
+        }
+
+        /**
+         * Načíta videné ID nehôd z lokálneho úložiska.
+         */
+        function loadKnownIds() {
+            try {
+                const ids = JSON.parse(localStorage.getItem('known_accidents') || '[]');
+                return new Set(ids);
+            } catch (e) {
+                console.error("Chyba pri načítaní knownIds:", e);
+                return new Set();
+            }
+        }
+
+        /**
+         * Uloží aktuálny zoznam videných ID nehôd do lokálneho úložiska.
+         */
+        function saveKnownIds(accidentSet) {
+            try {
+                localStorage.setItem('known_accidents', JSON.stringify(Array.from(accidentSet)));
+            } catch (e) {
+                console.error("Chyba pri ukladaní knownIds:", e);
+            }
+        }
+
+        /**
+         * Aktualizuje čas poslednej aktualizácie v UI.
+         */
+        function updateLastUpdateTime() {
+            const now = new Date();
+            lastUpdateTimestamp = now.getTime();
+            const timeString = now.toLocaleTimeString('sk-SK', { 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                second: '2-digit'
+            });
+            document.getElementById('last-update-time').textContent = timeString;
+        }
+
+        /**
+         * Vypočíta vzdialenosť (Haversine formula).
+         */
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const toRad = (angle) => angle * (Math.PI / 180);
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = 
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        /**
+         * Kontrola, či je nehoda čerstvá (< 30 minút).
+         */
+        function isRecentAccident(accidentPubMillis) {
+            if (!lastUpdateTimestamp) return false;
+            const diffMinutes = (lastUpdateTimestamp - accidentPubMillis) / (1000 * 60);
+            return diffMinutes < CONFIG.RECENT_THRESHOLD_MINUTES;
+        }
+
+        /**
+         * Formátuje typ nehody na čitateľný text.
+         */
+        function formatAccidentType(type, subtype) {
+            if (subtype) {
+                return subtype
+                    .replace('ACCIDENT_', '')
+                    .replace(/_/g, ' ')
+                    .toLowerCase()
+                    .split(' ')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                    .join(' ');
+            }
+            return type;
+        }
+
+        // ===== AUDIO SYSTEM =====
+
+        /**
+         * Inicializuje audio systém a event handlery.
+         */
+        function initAudio() {
+            try {
+                audioAlert = document.getElementById('new-alert-audio');
+                if (audioAlert) {
+                    // Predvolený stav je OFF, kým používateľ neinteraguje so stránkou.
+                    updateAudioIndicator('off');
+                    audioAlert.preload = 'auto';
+                    
+                    // Robustnejší pokus o odomknutie zvuku pri prvej interakcii (klik, dotyk, klávesa).
+                    // Inšpirované index_v2c.html.
+                    const unlockAudio = () => {
+                        audioAlert.play().then(() => {
+                            audioAlert.pause();
+                            audioAlert.currentTime = 0;
+                            console.log('✅ Audio unlocked by user interaction');
+                            updateAudioIndicator('ready'); // Zmena stavu na ON po úspešnom odomknutí.
+                        }).catch(e => {
+                            // Prehliadač nepovolil play (e.g. muted play)
+                            console.warn('⚠️ Could not auto-unlock audio:', e.message);
+                            updateAudioIndicator('error');
+                        });
+                    };
+
+                    // Pridanie listenerov pre viac typov interakcií.
+                    ['click', 'touchstart', 'keydown'].forEach(eventName => {
+                        document.addEventListener(eventName, unlockAudio, { once: true, passive: true });
+                    });
+
+                } else {
+                    updateAudioIndicator('error');
+                }
+            } catch (error) {
+                console.error('❌ Error initializing audio system:', error);
+                updateAudioIndicator('error');
+            }
+        }
+
+        /**
+         * Aktualizuje vizuálny indikátor stavu audio systému.
+         */
+        function updateAudioIndicator(status) {
+            const indicator = document.getElementById('audio-status');
+            if (!indicator) return;
+
+            switch (status) {
+                case 'off':
+                    indicator.textContent = '🔊 OFF';
+                    indicator.style.color = '#6b6b6b'; // Neutrálna sivá
+                    indicator.style.borderColor = '#333';
+                    break;
+                case 'ready':
+                    indicator.textContent = '🔊 ON';
+                    indicator.style.color = 'var(--color-neon-green)';
+                    break;
+                case 'error':
+                    indicator.textContent = '🔇 OFF';
+                    indicator.style.color = 'var(--color-neon-orange)';
+                    break;
+                case 'playing':
+                    indicator.classList.add('alert-active');
+                    setTimeout(() => {
+                        indicator.classList.remove('alert-active');
+                    }, 3000);
+                    break;
+            }
+        }
+
+        /**
+         * Prehrá audio upozornenie.
+         */
+        function playAudioAlert() {
+            if (!audioAlert) return;
+
+            try {
+                audioAlert.currentTime = 0;
+                const playPromise = audioAlert.play();
+
+                if (playPromise !== undefined) {
+                    playPromise
+                        .then(() => {
+                            console.log('🔊 Audio alert playing...');
+                            updateAudioIndicator('playing');
+                        })
+                        .catch(err => {
+                            console.warn('❌ Audio playback failed (blocked by browser?):', err.message);
+                        });
+                }
+            } catch (error) {
+                console.error('❌ Audio playback error:', error);
+            }
+        }
+
+        // ===== NEW ACCIDENT DETECTION LOGIC (PERSISTENT) =====
+
+        /**
+         * Kontroluje, či sa objavili nové nehody (na základe localStorage) a spustí audio alert.
+         */
+        function checkForNewAccidents(accidents) {
+            let knownIds = loadKnownIds(); 
+            const currentAccidentIds = new Set();
+            const newAccidentsFound = [];
+
+            // Zisťujeme, či bol systém už inicializovaný (tj. či to nie je prvé spustenie)
+            const initialized = localStorage.getItem('initialized') === 'true';
+
+            accidents.forEach(alert => {
+                const accidentId = getAccidentId(alert);
+                currentAccidentIds.add(accidentId);
+
+                if (initialized && !knownIds.has(accidentId)) {
+                    // Nová nehoda detekovaná
+                    newAccidentsFound.push(accidentId);
+                }
+            });
+
+            // Aktualizujeme stav videných nehôd na aktuálny zoznam
+            saveKnownIds(currentAccidentIds);
+
+            if (!initialized) {
+                // Prvé spustenie: len inicializácia stavu, neprehrá sa audio
+                localStorage.setItem('initialized', 'true');
+                console.log(`ℹ️ Initializovaných ${accidents.length} nehôd. Audio preskočené.`);
+            } else if (newAccidentsFound.length > 0) {
+                // Audio sa prehrá len ak je systém inicializovaný A sú nájdené nové nehody
+                console.log(`🚨 NOVÁ NEHODA DETEKOVANÁ! Počet nových: ${newAccidentsFound.length}`);
+                playAudioAlert();
+            } else {
+                console.log('✓ Žiadne nové nehody od poslednej aktualizácie.');
+            }
+        }
+
+        // ===== DATA FETCHING & RENDERING =====
+
+        /**
+         * Hlavná funkcia pre načítanie a zobrazenie nehôd.
+         */
+        async function fetchWazeAccidents() {
+            if (isRefreshing) return;
+            
+            isRefreshing = true;
+            document.getElementById('refresh-container').classList.add('loading');
+            const refreshBtn = document.getElementById('refresh-btn');
+            refreshBtn.classList.add('refreshing'); // Túto triedu ponecháme pre zmenu farby textu
+            refreshBtn.textContent = 'Aktualizujem...';
+            
+            updateLastUpdateTime();
+            const container = document.getElementById('accidents-container');
+            
+            if (!container.querySelector('.accidents-list')) {
+                 container.innerHTML = '<div class="loading-message">⏳ Načítavam aktuálne nehody...</div>';
+            }
+
+            try {
+                const response = await fetch(WAZE_API_URL);
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                
+                const data = await response.json();
+                
+                if (!data.alerts || !Array.isArray(data.alerts)) throw new Error('Invalid data structure from Waze API');
+                
+                const relevantAccidents = data.alerts.filter(alert => 
+                    alert.type === 'ACCIDENT' && alert.location
+                );
+
+                if (relevantAccidents.length === 0) {
+                    container.innerHTML = `
+                        <div class="no-data-message">
+                            ✅ Žiadne aktuálne nehody v oblasti
+                            <br><small>V okolí nie sú hlásené žiadne nehody.</small>
+                        </div>
+                    `;
+                    // Ak sú data prázdne, vyčistíme stav, aby sa pri opätovnom objavení nehody zvuk prehral
+                    localStorage.setItem('known_accidents', '[]');
+                    return;
+                }
+
+                // ===== KRITICKÁ FUNKCIA: Detekcia nových nehôd (S PERSISTENCIOU) =====
+                checkForNewAccidents(relevantAccidents);
+
+                relevantAccidents.sort((a, b) => b.pubMillis - a.pubMillis);
+
+                // ===== RENDERING ACCIDENTS =====
+                const listFragment = document.createDocumentFragment();
+                
+                relevantAccidents.forEach((alert, index) => {
+                     const lat = alert.location.y;
+                    const lon = alert.location.x;
+                    
+                    const description = alert.street 
+                        ? `${alert.city || 'Neznáme mesto'}, ${alert.street}` 
+                        : `${alert.city || 'Neznáma lokalita'} (GPS: ${lat.toFixed(4)}, ${lon.toFixed(4)})`;
+                    
+                    const type = formatAccidentType(alert.type, alert.subtype);
+                    const confidence = alert.confidence || 0;
+                    const reliability = alert.reliability || 0;
+                    const nThumbsUp = alert.nThumbsUp || 0;
+                    const reportRating = alert.reportRating || 0;
+                    
+                    const updateTime = new Date(alert.pubMillis).toLocaleTimeString('sk-SK', { 
+                        hour: '2-digit', minute: '2-digit', second: '2-digit'
+                    });
+                    
+                    const distance = calculateDistance(CONFIG.KOMAR_LAT, CONFIG.KOMAR_LON, lat, lon).toFixed(1);
+                    
+                    // --- Logika klasifikácie a tried ---
+                    const isTop3 = index < 3;
+                    const isRecent = isRecentAccident(alert.pubMillis);
+                    
+                    let itemClass = 'accident-item';
+
+                    // Farebné odlíšenie: Čerstvá (žltá) má najvyššiu prioritu.
+                    if (isRecent) { 
+                        itemClass += ' recent';
+                    } else if (isTop3) {
+                        itemClass += ' top3'; 
+                    } else {
+                        itemClass += ' other';
+                    }
+
+                    // Vytvorenie elementu karty nehody
+                    const card = document.createElement('div');
+                    card.className = itemClass;
+
+                    // Vloženie obsahu s použitím escapeHtml pre bezpečnosť
+                    card.innerHTML = `
+                        <div class="main-row">
+                            <div class="location">${escapeHtml(description)}</div>
+                            <div class="time-km">
+                                <span>${escapeHtml(updateTime)} • ${escapeHtml(distance)} km</span>
+                            </div>
+                        </div>
+                        <div class="sub-row">
+                            <div class="type-stats">
+                                <span style="font-weight: bold;">${escapeHtml(type)}</span>
+                                <span class="stat-item">Conf: ${escapeHtml(confidence)}</span>
+                                <span class="stat-item">Rel: ${escapeHtml(reliability)}</span>
+                                <span class="stat-item">${escapeHtml(nThumbsUp)}👍</span>
+                                <span class="stat-item">${escapeHtml(reportRating)}⭐</span>
+                            </div>
+                            <a class="btn-waze" href="https://waze.com/ul?ll=${lat},${lon}&navigate=yes" target="_blank" rel="noopener">
+                                waze
+                            </a>
+                        </div>
+                    `;
+                    listFragment.appendChild(card);
+                });
+                
+                // Vytvorenie hlavného zoznamu a vloženie všetkých kariet naraz
+                const accidentsList = document.createElement('div');
+                accidentsList.className = 'accidents-list';
+                accidentsList.appendChild(listFragment);
+
+                container.innerHTML = ''; // Vyčistenie kontajnera
+                container.appendChild(accidentsList); // Vloženie celého zoznamu naraz
+
+            } catch (error) {
+                console.error('❌ Error fetching accidents:', error);
+                container.innerHTML = `
+                    <div class="error-message">
+                        ❌ Chyba pri načítaní dát
+                        <br><small>${escapeHtml(error.message)}</small>
+                        <br><br><small>Skúste to znova o chvíľu alebo stlačte Refresh</small>
+                    </div>
+                `;
+            } finally {
+                isRefreshing = false;
+                document.getElementById('refresh-container').classList.remove('loading');
+                refreshBtn.classList.remove('refreshing');
+                refreshBtn.textContent = 'Refresh';
+            }
+        }
+
+        /**
+         * Manuálny refresh (kliknutie na tlačidlo)
+         */
+        function manualRefresh() {
+            console.log('👆 Manual refresh triggered');
+            fetchWazeAccidents();
+        }
+
+        // ===== INITIALIZATION =====
+
+        /**
+         * Inicializácia aplikácie pri načítaní stránky
+         */
+        function init() {
+            // Priradenie funkcie manuálneho refreshu
+            document.getElementById('refresh-btn').addEventListener('click', manualRefresh);
+
+            // 1. Inicializácia audio systému
+            initAudio();
+            
+            // 2. Prvé načítanie dát
+            fetchWazeAccidents();
+            
+            // 3. Nastavenie automatického obnovovania každých 10 sekúnd
+            setInterval(fetchWazeAccidents, CONFIG.REFRESH_INTERVAL);
+        }
+
+        // ===== START APPLICATION =====
+        
+        // Spustenie aplikácie po načítaní DOM
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+
+    </script>
+</body>
+</html>
