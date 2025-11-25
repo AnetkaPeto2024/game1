@@ -77,6 +77,18 @@
             align-items: center;
             justify-content: center;
             font-size: 1.2rem;
+            /* Po zmene na obrázok zmeníme typ pozadia a odstránime font-size pre emoji */
+            background: none; /* Odstránenie oranžového pozadia pre obrázok, ak nie je potrebné */
+            font-size: initial; 
+            padding: 0; /* Pre istotu */
+        }
+
+        /* Nový štýl pre obrázok, aby sa zmestil do logo-icon */
+        .logo-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain; /* Zabezpečí, že sa obrázok prispôsobí kontajneru bez orezania */
+            border-radius: 8px; /* Ak chceme zaobliť aj obrázok */            
         }
         
         .nav-links {
@@ -425,7 +437,9 @@
     <nav>
         <div class="nav-container">
             <a href="#" class="logo">
-                <div class="logo-icon">🚗</div>
+                <div class="logo-icon">
+                    <img src="autohelp_logo_symbol_small.png" alt="Logo AUTOHELP24" class="logo-img">
+                </div>
                 <span>AUTOHELP<span style="color: var(--orange);">24</span></span>
             </a>
             <button class="menu-toggle" onclick="toggleMenu()">☰</button>
